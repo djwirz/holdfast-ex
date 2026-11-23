@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+/_build/
+/deps/
+/cover/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+/tmp/
+/priv/plts/
+*.log
+# Holdfast's page and storm, fetched from a pinned commit (decisions log, Q-R2)
+/vendor/holdfast/
