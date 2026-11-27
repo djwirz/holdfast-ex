@@ -13,7 +13,7 @@ Slices 1 to 3 are built: `lib/holdfast_ex/` has the events, the core and the inv
 - ADRs are written as `Accepted` in the PR that adds them, and merging is the acceptance. Never rewrite a merged ADR's decision. Add a new ADR that supersedes it.
 - When the spec and the code disagree, stop and ask. If the decision changes, update the spec in the same PR.
 - Elixir and OTP are new ground for Dan. Explain the OTP idea behind each new piece briefly in the PR description, so the PR doubles as notes.
-- Built with Claude Code in the open: the case study gets a section on how AI was used and where it was wrong, so note real mistakes in PR descriptions.
+- Built with Claude Code. The case study says so once, briefly, under "How it was built"; mistakes go under "What went wrong" without attributing them to the AI. Note real mistakes in PR descriptions.
 
 ## Constraints
 - **Elixir/OTP is the point.** The service is Elixir. Check current Elixir, OTP and library versions and APIs against their docs before pinning or using anything. Never trust the handoff or this repo's docs for versions.
