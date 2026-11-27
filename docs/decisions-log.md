@@ -25,6 +25,11 @@ Questions from the planning handoff (2026-11-23) and from writing the spec. A de
 | Q17 | Missed live events, when seqs have gaps | Each published event carries the previous public seq | A gap in seqs is normal, so it can't signal a loss | planner | 0013 |
 | Q18 | When the k6 storm first runs | Slice 3 on one node, slice 4 with the shared fake and the checker, slice 5 on two nodes | Slice 4 already needed a storm to be done, and contract problems show up sooner | planner | |
 | Q19 | Which auctions have a running server | Every unfinished one, kept up by a sweep; any other on a bid or a snapshot miss; finished ones stop when idle | On demand alone, an auction with no traffic never closes | planner | 0014 |
+| Q-V1 (slice 1) | Versions first used in slice 1 | Elixir 1.20.5 on OTP 29.1.3 (`.tool-versions`), StreamData 1.4.0, Credo 1.7.19, Dialyxir 1.4.9, checked 2026-11-27. The rest of Q-V1 stays open | Current releases that support each other | planner | |
+| Q20 | How the core gets a bidder's alias, which `bid_accepted` records | In the authorization command, computed by the caller | The HMAC key is a secret and the core is pure. Aliases are built at slice 3 | planner | 0004 |
+| Q21 | What invariant 3 checks | Accept time before `ends_at` (spec §7), and also no accept after `auction_closed` in log order | Costs nothing, and catches a close followed by a late accept from a skewed clock | planner | |
+| Q22 | One append or two for `hold_authorized` and the bid's outcome | One. A log that has the hold and no outcome is still decided, on the logged hold, without a second one | The property tests cut the log anywhere, which is harsher than an atomic append | planner | |
+| Q23 | `auction_extended`, and the commands for hold release and capture | Not built. `apply` folds release and capture events; their commands come with HoldKeeper in slice 4, and `auction_extended` with soft close | Nothing in slice 1 would use them | planner | |
 
 ## Still open
 | # | Question | Leaning | Who answers | By |
