@@ -3,7 +3,7 @@
 Real-time auctions in Elixir/OTP where a bid counts only once a Stripe test-mode authorization hold covers it. Each auction is one supervised process that decides its bids and rebuilds itself from an append-only event log. Holds are derived from state, and Stripe's rate limit is a designed constraint. It keeps Holdfast's HTTP and SSE contract, so Holdfast's page and k6 storm run against it unchanged. Use they/them for Dan.
 
 ## Status
-Slice 1 (foundation and the pure core) is built: `lib/holdfast_ex/` has the events, the core and the invariants, with property tests and CI. Next is slice 2 (event store and the auction process). Design: `docs/spec.md`, ADRs 0001–0014, `docs/plan.md` and `docs/decisions-log.md`. Open questions are in the decisions log, each with who answers it and by which slice. The judgment behind the project is in `docs/artifact-spec.md`.
+Slices 1 and 2 are built: `lib/holdfast_ex/` has the events, the core and the invariants, then the event store, the auction process with its supervisor and sweep, and an in-memory payments adapter, with property and Postgres tests in CI (`docker compose up -d` first). Next is slice 3 (HTTP contract and live updates). Design: `docs/spec.md`, ADRs 0001–0016, `docs/plan.md` and `docs/decisions-log.md`. Open questions are in the decisions log, each with who answers it and by which slice. The judgment behind the project is in `docs/artifact-spec.md`.
 
 ## How we work
 - Pull requests only. Never push to `main`. Merged PRs are the project's record.

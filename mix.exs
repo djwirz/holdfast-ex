@@ -9,25 +9,34 @@ defmodule HoldfastEx.MixProject do
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
+      aliases: aliases(),
       dialyzer: dialyzer()
     ]
   end
 
   def application do
-    [extra_applications: [:logger]]
+    [mod: {HoldfastEx.Application, []}, extra_applications: [:logger]]
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
-  # No runtime dependencies yet. Each of these exists for spec §10 and
-  # acceptance criterion 4; stream_data also for invariants 1, 2, 3 and 5.
+  # ecto_sql, postgrex: the event log, invariant 6 (ADR 0010). telemetry: the
+  # steps spec §10 kills the server at, and §8's traces later. credo, dialyxir,
+  # stream_data: spec §10 and acceptance criterion 4.
   defp deps do
     [
+      {:ecto_sql, "~> 3.14"},
+      {:postgrex, "~> 0.23"},
+      {:telemetry, "~> 1.4"},
       {:stream_data, "~> 1.4", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
+  end
+
+  defp aliases do
+    [test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]]
   end
 
   defp dialyzer do

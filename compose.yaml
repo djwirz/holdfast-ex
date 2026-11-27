@@ -1,0 +1,19 @@
+# Local Postgres. Slice 4 adds Holdfast's shared Stripe fake.
+name: holdfast-ex
+services:
+  postgres:
+    image: postgres:18.7
+    environment:
+      POSTGRES_PASSWORD: postgres # local development only
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      # Since 18 the image keeps its data in a versioned directory under here.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+volumes:
+  pgdata:

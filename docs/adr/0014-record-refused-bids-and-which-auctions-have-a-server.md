@@ -1,7 +1,7 @@
 # 14. Record refused bids, and which auctions have a server
 
 Date: 2026-11-27
-Status: Accepted
+Status: Accepted. What "unfinished" means superseded by 15
 
 Supersedes the sentence in ADR 0002 that gives one AuctionServer to each open auction. The rest of ADR 0002 stands.
 
