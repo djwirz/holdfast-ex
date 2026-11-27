@@ -15,8 +15,7 @@ defmodule HoldfastEx.AuctionServer do
     * `:auction_id` (required)
     * `:name` - registered under the auction id by default; `nil` for none
     * `:now` - the node's clock, `(-> DateTime.t())`
-    * `:alias` - a bidder's public name, `(auction_id, user_id -> String.t())`.
-      A placeholder until aliases are built at slice 3
+    * `:alias` - a bidder's public name, `(auction_id, user_id -> String.t())`
     * `:payments` - a `HoldfastEx.Payments` module
     * `:retry_ms` - the first wait before asking the provider again
     * `:idle_timeout_ms` - how long a finished auction's server stays
@@ -28,6 +27,9 @@ defmodule HoldfastEx.AuctionServer do
   alias HoldfastEx.Auctions
   alias HoldfastEx.Event
   alias HoldfastEx.EventStore
+  alias HoldfastEx.PublicView
+  alias HoldfastEx.Snapshots
+  alias HoldfastEx.Web.SSE
 
   @max_retry_ms 5_000
   # Long waits are taken in pieces, so a clock that jumps is noticed.
@@ -48,8 +50,9 @@ defmodule HoldfastEx.AuctionServer do
     state = %{
       id: Keyword.fetch!(opts, :auction_id),
       core: Auction.new(),
+      view: PublicView.new(Keyword.fetch!(opts, :auction_id)),
       now: Keyword.get(opts, :now, &DateTime.utc_now/0),
-      alias: Keyword.get(opts, :alias, fn _auction_id, _user_id -> "bidder" end),
+      alias: Keyword.get(opts, :alias, &HoldfastEx.Alias.of/2),
       payments: Keyword.get(opts, :payments, HoldfastEx.Payments.Memory),
       retry_ms: Keyword.get(opts, :retry_ms, 100),
       idle_timeout_ms:
@@ -67,12 +70,15 @@ defmodule HoldfastEx.AuctionServer do
 
   @impl true
   def handle_continue(:replay, state) do
-    core = Auction.replay(EventStore.load(state.id))
+    events = EventStore.load(state.id)
+    core = Auction.replay(events)
 
     if core.auction == nil do
       {:stop, :normal, state}
     else
-      state = %{state | core: core}
+      {view, _already_published} = PublicView.fold(state.view, events)
+      :ok = Snapshots.put(view)
+      state = %{state | core: core, view: view}
       schedule_close(state)
       step(state, :replayed)
       resume(state)
@@ -92,7 +98,11 @@ defmodule HoldfastEx.AuctionServer do
     |> noreply()
   end
 
+  # For a node that has no copy of the snapshot (ADR 0014). It runs after the
+  # replay, which is ahead of it in the queue.
   @impl true
+  def handle_call(:view, _from, state), do: reply(state, state.view)
+
   def handle_call({:place_bid, params, deadline_ms}, from, state) do
     step(state, :bid_received, params.bid_id)
 
@@ -271,8 +281,23 @@ defmodule HoldfastEx.AuctionServer do
     next_seq = state.core.version + 1
 
     with {:ok, stamped} <- EventStore.append(state.id, next_seq, events, guard(state, events)) do
-      {:ok, %{state | core: Enum.reduce(stamped, state.core, &Auction.apply(&2, &1))}}
+      core = Enum.reduce(stamped, state.core, &Auction.apply(&2, &1))
+      {:ok, show(%{state | core: core}, stamped)}
     end
+  end
+
+  # Readers hear of it only now, and callers after them. A lost message is read
+  # back from the log (ADR 0013).
+  defp show(state, stamped) do
+    {view, published} = PublicView.fold(state.view, stamped)
+    :ok = Snapshots.put(view)
+
+    Enum.each(published, fn {previous, event} ->
+      message = {:holdfast_event, previous, event}
+      :ok = Phoenix.PubSub.broadcast(HoldfastEx.PubSub, SSE.topic(state.id), message)
+    end)
+
+    %{state | view: view}
   end
 
   # Only an accept is refused by time: everything else must be appendable late.

@@ -143,7 +143,7 @@ Transient Stripe outcomes are not events: a bid with `bid_placed` and no outcome
 
 ## 6. Interfaces: the contract
 
-The HTTP and SSE contract is Holdfast's, kept stable so Holdfast's page and k6 storm run unchanged and a comparison stays possible. Its sources are Holdfast's spec §6, its `load/storm.ts` and its page, read at the pinned commit (decisions log, Q-R2). Where the spec there says less than the page and the storm need, this section records what those two clients need. Re-read them at slice 3 before relying on any detail here.
+The HTTP and SSE contract is Holdfast's, kept stable so Holdfast's page and k6 storm run unchanged and a comparison stays possible. Its sources are Holdfast's spec §6, its `load/storm.ts` and its page, read at the pinned commit (decisions log, Q-R2). Where the spec there says less than the page and the storm need, this section records what those two clients need. They were re-read at slice 3.
 
 **Origin:** every request other than `GET` and `HEAD` must carry the app's configured origin, or gets `403`. The one exception is `POST /api/stripe/webhook`, which is verified by its signature.
 
@@ -167,7 +167,10 @@ The HTTP and SSE contract is Holdfast's, kept stable so Holdfast's page and k6 s
 - `201 { bid }` resolved (`accepted`, `lost_race` or `rejected` with a reason);
 - `202 { bid }` still `pending`;
 - `400` bad body or a missing key (1 to 100 characters); `401` signed out; `403` wrong origin; `404` unknown auction;
-- `422` key reused with a different auction or amount, even if the first bid was rejected; `429` rate limited.
+- `422` key reused with a different auction or amount, even if the first bid was rejected; `429` rate limited;
+- `503` the server can't find out what happened to the bid. A retry with the same key is safe.
+
+The body is `{ amount }` alone, from 1 to 99,999,999 cents. A key is UTF-8 without NUL. Any route answers `503` if the database is unreachable. The card routes and the webhook arrive with Stripe (slice 4) and are `404` until then.
 
 A retry with the same key and amount returns the same bid as it stands now. A bid after the close is `201`, `rejected`, `ended`. Errors are `{ error, message }`.
 

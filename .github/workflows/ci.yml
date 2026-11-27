@@ -54,6 +54,17 @@ jobs:
           MIX_ENV: dev
       - run: mix test --warnings-as-errors
 
+  # The page is Holdfast's, built from the pinned commit (ADR 0011).
+  page:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: npm install -g pnpm@12.21.0
+      - run: scripts/fetch-page.sh
+
   gitleaks:
     runs-on: ubuntu-24.04
     steps:
