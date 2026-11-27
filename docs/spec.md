@@ -84,7 +84,7 @@ It shows Elixir and OTP used for what they're for: processes as the unit of cons
 ```
 
 ### Components
-- **AuctionServer** (ADR 0002). A GenServer per auction, started on demand (also for a closed auction that receives a bid) under a DynamicSupervisor and registered cluster-wide (ADR 0012). On start it replays its events to rebuild state and schedules its close (ADR 0007). A bid arrives as a call. The server:
+- **AuctionServer** (ADRs 0002, 0014). A GenServer per auction under a DynamicSupervisor, registered cluster-wide (ADR 0012). A sweep, at node start and on an interval, keeps one running for every unfinished auction (not closed, or its winner not yet captured). A bid, or a snapshot read that finds no copy, starts one for any auction that exists. A finished auction's server stops when idle. On start it replays its events to rebuild state and schedules its close (ADR 0007). A bid arrives as a call. The server:
   1. runs the pre-check in memory;
   2. appends `bid_placed`;
   3. starts a supervised Task for the authorization through the gate.
@@ -103,7 +103,7 @@ It shows Elixir and OTP used for what they're for: processes as the unit of cons
   - `Memory`: in-process, for unit and property tests.
 
   Each adapter maps its answers to one error taxonomy: declined, needs authentication, transient (retry the same key), key in flight (`409`), replayed `500` (look up the hold by metadata), and a bug (raise).
-- **Reads** (ADR 0009). The AuctionServer writes its public snapshot (auction, current high, recent bids, `version`, `minimumNextBid`) to an ETS table on every change. Snapshot GETs read ETS and never touch the server. On other nodes a snapshot comes over PubSub into that node's ETS. A node that has missed it reads it from the owner once.
+- **Reads** (ADR 0009). The AuctionServer writes its public snapshot (auction, current high, recent bids, `version`, `minimumNextBid`) to an ETS table on every change. Snapshot GETs read ETS and never touch the server. On other nodes a snapshot comes over PubSub into that node's ETS. A node that has no copy reads it from the owner once, starting the owner if none is running (ADR 0014).
 - **Live updates** (ADRs 0009, 0013). The server publishes each public event on `Phoenix.PubSub` (`auction:<id>`), with the previous public event's seq. Each node's SSE connections receive it. A new connection subscribes, sends a `snapshot` event, reads any public events after the snapshot's version from `auction_events`, then follows PubSub, deduplicating by id. A resume with `Last-Event-ID` sends no snapshot and starts from that id. A previous public seq beyond what the connection has means a message was missed, and it reads the log.
 - **Webhook.** Verifies Stripe's signature on the raw body, records the event id for dedupe, and nudges HoldKeeper and the auction. It speeds things up, and is never the only source of truth.
 
@@ -145,11 +145,13 @@ Transient Stripe outcomes are not events: a bid with `bid_placed` and no outcome
 
 The HTTP and SSE contract is Holdfast's, kept stable so Holdfast's page and k6 storm run unchanged and a comparison stays possible. Its sources are Holdfast's spec §6, its `load/storm.ts` and its page, read at the pinned commit (decisions log, Q-R2). Where the spec there says less than the page and the storm need, this section records what those two clients need. Re-read them at slice 3 before relying on any detail here.
 
+**Origin:** every request other than `GET` and `HEAD` must carry the app's configured origin, or gets `403`. The one exception is `POST /api/stripe/webhook`, which is verified by its signature.
+
 **Routes**
 
 | Route | Answers |
 |---|---|
-| `POST /api/auth/dev` `{ login }` (only with dev sign-in enabled) | `204` and the `holdfast_session` cookie; `400` unless `login` is 1 to 39 of `A-Z a-z 0-9 -` |
+| `POST /api/auth/dev` `{ login }` (only with dev sign-in enabled) | `204` and the `holdfast_session` cookie; `400` unless `login` is 1 to 39 of `A-Z a-z 0-9 -`; `429` rate limited |
 | `POST /api/auth/logout` | `204` |
 | `GET /api/config` | `{ githubSignIn, devSignIn, cardRequired, stripePublishableKey }` |
 | `GET /api/me` | `{ user: { login }, hasCard, cardRequired }`, or `401` signed out |
@@ -173,7 +175,7 @@ A retry with the same key and amount returns the same bid as it stands now. A bi
 - **Ids:** auction ids are UUIDs. The page routes on them.
 - **Bid:** `{ id, auctionId, amount, status, reason, createdAt, resolvedAt }`. `status` is `pending`, `accepted`, `outbid`, `lost_race`, `rejected` or `won`. `outbid` and `won` are derived from later events: a bid once accepted is only ever `accepted`, `outbid` or `won`.
 - **Snapshot:** `{ auction: { id, title, status, startsAt, endsAt, startingPrice, minIncrement, version, minimumNextBid }, currentHigh, recentBids, you }`. The auction `status` is `scheduled`, `open`, `closed` or `settled`. `minimumNextBid` is null once closed. `currentHigh` is a public bid or null, `recentBids` the latest twenty accepted, newest first, and `you` the caller's alias or null.
-- **Public bid:** `{ version, amount, bidder, at }`.
+- **Public bid:** `{ version, amount, bidder, at }`. `at` is the database time of the `bid_accepted` row.
 - Money is integer cents, and times are ISO 8601.
 
 **SSE**
@@ -181,6 +183,7 @@ A retry with the same key and amount returns the same bid as it stands now. A bi
 - `bid.accepted`: `{ type, version, amount, bidder, at }`.
 - `auction.closed`: `{ type, version, status, winner, amount }`, with nulls when there were no bids.
 - `auction.extended`, if soft close is built.
+- An event is the same whether it arrives live or is read from the log: every field comes from the log up to that event. So the append returns each row's database time, and `status` in `auction.closed` is always `closed`, even once the snapshot says `settled`.
 - Each event's id is its auction version. With `Last-Event-ID`, the stream sends the public events after it and no snapshot. Comment lines keep an idle stream open.
 
 **Pages:** the node serves the built page, and a `GET` for a page route such as `/auctions/:id` gets `index.html`. Unknown paths under `/api/` stay JSON `404`s.
@@ -218,7 +221,7 @@ And the design rule they rest on, tested directly:
 | Stripe replays a `500` | The adapter looks up the hold by the bid id in metadata. Found → decide on it. None → `bid_rejected` `processing_error`. |
 | AuctionServer crashes mid-bid | The supervisor restarts it. Replay rebuilds state. Bids with `bid_placed` and no outcome are re-authorized with the same key, and Stripe replays the result. HoldKeeper cancels anything left over. |
 | Two writers for one auction (rolling deploy, netsplit) | The second append hits the sequence constraint and fails. That server crashes and replays. Holds it placed are canceled by HoldKeeper. |
-| Node dies | Its auctions restart on the next node that receives a request or on the restart's warm-up. Replay as above. |
+| Node dies | Its unfinished auctions restart on the next request or the next sweep, on any running node (ADR 0014). Replay as above. |
 | Two bids race at the same amount | The first authorization back to the mailbox wins. The other is `bid_lost`, and its hold is canceled. |
 | Close timer fires while authorizations are in flight | `auction_closed` is appended. Later results decide as `bid_lost` (reason `ended`), and their holds are canceled. |
 | Capture fails at close | `capture_failed` is recorded and retried with backoff. An alert fires after repeated failures, and the runbook covers it. |
@@ -257,7 +260,7 @@ And the design rule they rest on, tested directly:
 ## 9. Security
 - Secrets (Stripe keys, webhook secret, session secret, alias key) live in the host's secret store, never in the repo, logs or PR text.
 - At startup, production refuses: non-`sk_test_` keys, a non-`https` app origin, and dev sign-in unless deployed access says otherwise (decisions log, Q-D1).
-- Sessions: `HttpOnly`, `Secure`, `SameSite=Lax` cookies with 32 random bytes; only their SHA-256 is stored. Origin check on state-changing requests, against the configured app origin and not the request's `Host`.
+- Sessions: `HttpOnly`, `Secure`, `SameSite=Lax` cookies with 32 random bytes; only their SHA-256 is stored. Origin check on state-changing requests, against the configured app origin and not the request's `Host`; the signed Stripe webhook is exempt.
 - Request bodies are validated, and amounts are integers in a sane range. Bids are rate-limited per user, sign-in per IP. Both limits are configuration: a load run signs every bidder in from one address, so it raises them and records the values.
 - Webhook signatures are verified on the raw body.
 - gitleaks in CI; `.env.example` holds placeholders only.
@@ -275,6 +278,8 @@ And the design rule they rest on, tested directly:
   - The close timer with in-flight authorizations.
   - HoldKeeper against the in-memory fake with failing cancels.
   - The two unique conflicts told apart: a used key against a second writer.
+  - A bid call that times out, and one whose server dies, before and after `bid_placed` commits.
+  - The sweep: an auction with no bids still closes after a restart.
 - **Contract:** HTTP and SSE against §6, including `Last-Event-ID` resume and the status codes.
 - **Payments:** the `HttpFake` adapter against Holdfast's shared fake for failure injection it can do over HTTP: latency, declines, failing cancels, and `503` for a lost response or a key still in flight. The fake never sends a `409`, and it recovers its simulated `500` itself, so the Stripe adapter's handling of `409` and replayed `500` is tested against stubbed Stripe responses. Plus an opt-in real test-mode suite, run by hand before payment-touching merges and never in CI.
 - **Load:** Holdfast's `load/storm.ts` (k6 in Docker) from the pinned commit, then our checker. The storm first runs at slice 3 against one node and the in-memory adapter, adds the shared fake and the checker at slice 4, and moves to two clustered nodes behind a round-robin proxy at slice 5. Our checker reads the event log and the fake's `GET /audit` and applies the invariant functions. It fails on any violation, any give-up, or a run where nothing was accepted. CI runs a short storm from slice 4, and bigger runs are by hand. The fake's latency and fault settings are written down with each run.

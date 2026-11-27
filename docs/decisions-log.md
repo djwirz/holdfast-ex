@@ -21,9 +21,10 @@ Questions from the planning handoff (2026-11-23) and from writing the spec. A de
 | Q14 | Roadmap placement | Phase 5b, after Coverage Check and before portfolio polish | No preference given; the planner's recommendation | planner | |
 | Q15 | Where the comparison lives (`holdfast-bench` in Q5, Q12 and ADRs 0003 and 0011) | The last stage of [bid-storm](https://github.com/djwirz/bid-storm). No `holdfast-bench` repo | One repo already records storms from outside | Dan, 2026-11-26 | |
 | Q-R2 | How Holdfast's page and storm are pinned and fetched | Commit `427109f8813b6f72a7bb0b8bd42b6033bf250756`, cloned read-only in CI and by a local script. A bump is a reviewed PR | The latest Holdfast code the contract was re-read at | planner | 0011 |
-| Q16 | A bid the pre-check refuses: recorded, or only answered | Recorded as `bid_placed` and `bid_rejected` with its key | The contract gives every bid an id, a poll route and idempotency | planner | |
+| Q16 | A bid the pre-check refuses: recorded, or only answered | Recorded as `bid_placed` and `bid_rejected` with its key | The contract gives every bid an id, a poll route and idempotency | planner | 0014 |
 | Q17 | Missed live events, when seqs have gaps | Each published event carries the previous public seq | A gap in seqs is normal, so it can't signal a loss | planner | 0013 |
 | Q18 | When the k6 storm first runs | Slice 3 on one node, slice 4 with the shared fake and the checker, slice 5 on two nodes | Slice 4 already needed a storm to be done, and contract problems show up sooner | planner | |
+| Q19 | Which auctions have a running server | Every unfinished one, kept up by a sweep; any other on a bid or a snapshot miss; finished ones stop when idle | On demand alone, an auction with no traffic never closes | planner | 0014 |
 
 ## Still open
 | # | Question | Leaning | Who answers | By |
@@ -34,6 +35,6 @@ Questions from the planning handoff (2026-11-23) and from writing the spec. A de
 | Q-R1 | Stretch order: soft close, LiveView page, two-node deploy | Soft close first (smallest), then LiveView | Dan | after slice 7 |
 | Q-V1 | Current Elixir, OTP, Bandit, Plug, Ecto, Postgrex, `phoenix_pubsub`, StreamData, Req, OpenTelemetry and libcluster versions and APIs | Check at the slice that first uses each one. Never from the handoff or this repo's docs | planner | each slice |
 | Q-V2 | OTP's handling of a late `GenServer.reply` to a caller that timed out | Verify current behavior | planner | slice 2 |
-| Q-A1 | What the HTTP layer answers when the call times out or the server dies before it can tell whether `bid_placed` committed. A `202` for a bid that was never written would poll as `404` | Check the log by bid id; if absent, retry the command, which the key makes safe | planner | slice 2 |
+| Q-A1 | What the HTTP layer answers when the call times out or the server dies before it can tell whether `bid_placed` committed. A `202` for a bid that was never written would poll as `404` | Look up `bid_keys` by user and key, which also finds the original of a retry. Found: answer with that bid. Absent: retry the command, which the key makes safe. Database unreachable: `503` | planner | slice 2 |
 | Q-A2 | How `GET /api/bids/:id` and `GET /api/auctions` read, with no projections, on any node and after close | Fold from the log, indexed by bid id; revisit if measured as slow | planner | slice 3 |
 | Q-B1 | When the comparison method is written, and how its rate-limited condition works | In bid-storm, before slice 5 gives this system any load results | Dan | slice 5 |

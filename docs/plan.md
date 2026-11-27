@@ -5,7 +5,8 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
 ## 1. Foundation and the pure core
 - **Proves:** invariants 1, 2, 3 and 5 on paper. For random interleavings and crash points, every log the core can produce satisfies them.
 - **What it builds:**
-  - A pre-check refusal as recorded events (`bid_placed`, `bid_rejected`), not a bare error.
+  - A pre-check refusal as recorded events (`bid_placed`, `bid_rejected`), not a bare error (ADR 0014).
+  - The latest public event's seq in the state, covered by the property tests (ADR 0013).
   - The mix project, with format, Credo, Dialyzer, ExUnit and StreamData. CI with gitleaks.
   - The events (spec §4).
   - `decide/3` and `apply/2`.
@@ -28,8 +29,10 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
   - Ecto with Postgres: `auction_events` with the sequence key, `bid_keys`, and the append with an expected seq and the database-time guard for accepts.
   - Replay.
   - AuctionServer under a DynamicSupervisor, with a local Registry for now.
-  - The bid call's deadline: the id made before the call, and no `500` on a timeout or a dead server (decisions log, Q-A1).
+  - The bid call's deadline, below HTTP: the id made by the caller, and a timeout or a dead server resolved without an error (decisions log, Q-A1).
   - A used key told apart from a sequence conflict.
+  - The sweep that keeps a server running for every unfinished auction, and the idle stop (ADR 0014).
+  - Restart type and limits chosen so that a burst of conflicts on one auction can't take down the others.
   - The payments behaviour with the `Memory` adapter.
   - The close timer.
 - **Tests:**
@@ -37,8 +40,11 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
   - A second writer that must lose.
   - Bids straddling `ends_at` with a skewed node clock.
   - In-flight authorizations at close.
+  - A bid call that times out or loses its server, and a used key against a sequence conflict.
+  - A burst of conflicts on one auction leaves the others running.
+  - An auction with no bids closes after a restart.
 - **Inputs:** slice 1's core; Postgres in Docker Compose.
-- **Done when:** those tests pass in CI against real Postgres, and the invariant functions run over every resulting log.
+- **Done when:** those tests pass in CI against real Postgres, and invariants 1, 2, 3 and 5 hold over every resulting log. Invariant 4 needs HoldKeeper (slice 4).
 
 ## 3. HTTP contract and live updates
 - **Proves:** the contract (spec §6), the live path, and acceptance criterion 2's storm on one node.
@@ -50,6 +56,8 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
   - Reading one bid's status and listing auctions, designed in this slice's plan (decisions log, Q-A2).
   - Aliases, and rate limits set by configuration.
   - The seed command (spec §10).
+  - A snapshot miss that starts the auction's server (ADR 0014).
+  - A check that `Secure` cookies work over local HTTP in the browsers used, with the answer recorded.
   - Holdfast's page built from the pinned commit and served, with page routes falling back to `index.html`.
   - A runner for Holdfast's `storm.ts` from the pinned commit, as is.
 - **Inputs:**
@@ -58,7 +66,7 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
 - **Done when:**
   - The contract tests cover every route and status code the page and the storm use.
   - Two browser tabs on Holdfast's page bid against the in-memory fake locally.
-  - The storm passes its own thresholds against one node and the in-memory adapter, and the invariant functions pass over the resulting log.
+  - The storm passes its own thresholds against one node and the in-memory adapter, and invariants 1, 2, 3 and 5 hold over the resulting log.
 
 ## 4. Stripe
 - **Proves:** invariants 1 and 4 with failure injection, and the gate keeping cancels from starving.
@@ -87,6 +95,7 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
   - Local two-node clustering (libcluster or a fixed node list).
   - `:global` registration replacing the local Registry.
   - A small round-robin proxy, so one storm lands on both nodes.
+  - A way for a node's ETS snapshot to recover from a lost last message, since ADR 0013 covers only SSE connections.
   - The k6 storm and the checker run against two clustered nodes.
   - A kill-a-node run and a netsplit-and-heal run.
   - The CI storm moved to two nodes.
