@@ -5,6 +5,8 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
 ## 1. Foundation and the pure core
 - **Proves:** invariants 1, 2, 3 and 5 on paper. For random interleavings and crash points, every log the core can produce satisfies them.
 - **What it builds:**
+  - A pre-check refusal as recorded events (`bid_placed`, `bid_rejected`), not a bare error (ADR 0014).
+  - The latest public event's seq in the state, covered by the property tests (ADR 0013).
   - The mix project, with format, Credo, Dialyzer, ExUnit and StreamData. CI with gitleaks.
   - The events (spec §4).
   - `decide/3` and `apply/2`.
@@ -27,6 +29,10 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
   - Ecto with Postgres: `auction_events` with the sequence key, `bid_keys`, and the append with an expected seq and the database-time guard for accepts.
   - Replay.
   - AuctionServer under a DynamicSupervisor, with a local Registry for now.
+  - The bid call's deadline, below HTTP: the id made by the caller, and a timeout or a dead server resolved without an error (decisions log, Q-A1).
+  - A used key told apart from a sequence conflict.
+  - The sweep that keeps a server running for every unfinished auction, and the idle stop (ADR 0014).
+  - Restart type and limits chosen so that a burst of conflicts on one auction can't take down the others.
   - The payments behaviour with the `Memory` adapter.
   - The close timer.
 - **Tests:**
@@ -34,40 +40,52 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
   - A second writer that must lose.
   - Bids straddling `ends_at` with a skewed node clock.
   - In-flight authorizations at close.
+  - A bid call that times out or loses its server, and a used key against a sequence conflict.
+  - A burst of conflicts on one auction leaves the others running.
+  - An auction with no bids closes after a restart.
 - **Inputs:** slice 1's core; Postgres in Docker Compose.
-- **Done when:** those tests pass in CI against real Postgres, and the invariant functions run over every resulting log.
+- **Done when:** those tests pass in CI against real Postgres, and invariants 1, 2, 3 and 5 hold over every resulting log. Invariant 4 needs HoldKeeper (slice 4).
 
 ## 3. HTTP contract and live updates
-- **Proves:** the contract (spec §6) and the live path.
+- **Proves:** the contract (spec §6), the live path, and acceptance criterion 2's storm on one node.
 - **What it builds:**
   - Plug and Bandit, with dev sign-in, sessions and origin checks.
   - Snapshots from ETS.
   - `POST` bid with the deadline and `202`, and the bid poll.
-  - SSE with `Last-Event-ID` resume from the log, and PubSub fan-out.
-  - Aliases and rate limits.
-  - Holdfast's page built from a pinned commit and served (decisions log, Q-R2).
+  - SSE with the opening `snapshot` event, `Last-Event-ID` resume from the log, PubSub fan-out and missed-event detection (ADR 0013).
+  - Reading one bid's status and listing auctions, designed in this slice's plan (decisions log, Q-A2).
+  - Aliases, and rate limits set by configuration.
+  - The seed command (spec §10).
+  - A snapshot miss that starts the auction's server (ADR 0014).
+  - A check that `Secure` cookies work over local HTTP in the browsers used, with the answer recorded.
+  - Holdfast's page built from the pinned commit and served, with page routes falling back to `index.html`.
+  - A runner for Holdfast's `storm.ts` from the pinned commit, as is.
 - **Inputs:**
-  - Holdfast's spec §6, its `load/storm.ts`, and the page's API calls (`web/src`), re-read read-only.
+  - Holdfast's spec §6, its `load/storm.ts`, and the page's API calls (`web/src`), re-read read-only at the pinned commit.
   - Slice 2.
 - **Done when:**
   - The contract tests cover every route and status code the page and the storm use.
   - Two browser tabs on Holdfast's page bid against the in-memory fake locally.
+  - The storm passes its own thresholds against one node and the in-memory adapter, and invariants 1, 2, 3 and 5 hold over the resulting log.
 
 ## 4. Stripe
-- **Proves:** invariants 1 and 4 with real failure injection, and the gate keeping cancels from starving.
+- **Proves:** invariants 1 and 4 with failure injection, and the gate keeping cancels from starving.
 - **What it builds:**
   - The Stripe client over Req and the error taxonomy.
   - The `HttpFake` adapter for Holdfast's shared fake.
-  - StripeGate with per-class reserves.
+  - StripeGate with per-class reserves, its rate and cap set by configuration.
   - HoldKeeper: desired against live holds, cancels, and captures at close.
   - The webhook.
   - Real-Stripe card setup in the contract.
   - The opt-in real test-mode suite, by hand only.
+  - Our checker CLI: event log and the fake's `/audit`, through the invariant functions.
+  - The storm against one node and the shared fake, and a short one in CI.
 - **Inputs:**
   - Holdfast's `server/src/payments/fake-server.ts`, run as a black box.
   - A Stripe test account with `sk_test_` keys (Dan already has one).
 - **Done when:**
-  - Against the shared fake, with latency, declines, `409`s, replayed `500`s and failing cancels injected, a storm leaves zero orphaned holds once idle.
+  - Against the shared fake, with latency, declines, `503`s and failing cancels injected, the storm passes the checker with zero orphaned holds once idle.
+  - The Stripe adapter handles a `409` and a replayed `500` from stubbed responses.
   - A flood of bids never delays a cancel past its reserve.
   - The real-mode suite passes by hand.
 
@@ -76,11 +94,12 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
 - **What it builds:**
   - Local two-node clustering (libcluster or a fixed node list).
   - `:global` registration replacing the local Registry.
-  - Our checker CLI: event log and the fake's `/audit`, through the invariant functions.
-  - Holdfast's k6 storm run against two clustered nodes.
+  - A small round-robin proxy, so one storm lands on both nodes.
+  - A way for a node's ETS snapshot to recover from a lost last message, since ADR 0013 covers only SSE connections.
+  - The k6 storm and the checker run against two clustered nodes.
   - A kill-a-node run and a netsplit-and-heal run.
-  - A short storm in CI.
-- **Inputs:** Holdfast's `load/storm.ts` from a pinned commit, run as is.
+  - The CI storm moved to two nodes.
+- **Inputs:** slice 4's storm and checker.
 - **Done when:**
   - The storm and the kill and netsplit runs pass the checker.
   - The README gives the throughput in words with its spread.
@@ -92,6 +111,7 @@ One pull request per slice, after the spec (PR #1). Each slice starts in plan mo
   - Metrics and alerts, each fired once on purpose.
   - The runbook.
   - A release image.
+  - Open demo auctions, from the seed command.
   - **The budget limit first**, then one deployed node and a post-deploy smoke test.
 - **Inputs:** the hosting ADR, with current prices checked (ADR 0012), and deployed access settled (decisions log, Q-D1).
 - **Done when:** deployed from `main`, the smoke test passes, a trace picture exists, and every alert has fired once.

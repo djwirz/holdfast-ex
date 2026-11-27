@@ -1,7 +1,7 @@
 # 2. One process per auction is the serializer
 
 Date: 2026-11-23
-Status: Accepted
+Status: Accepted. Which auctions have a server superseded by 14
 
 ## Context
 Bids on one auction must be decided one at a time against the current high (invariant 2). A Stripe authorization takes from a fraction of a second to a few seconds, and nothing may wait on it while holding the right to decide, or one slow card stalls every bidder. Near-simultaneous bids are the normal case at the end of an auction.

@@ -3,7 +3,7 @@
 Real-time auctions in Elixir/OTP where a bid counts only once a Stripe test-mode authorization hold covers it. Each auction is one supervised process that decides its bids and rebuilds itself from an append-only event log. Holds are derived from state, and Stripe's rate limit is a designed constraint. It keeps Holdfast's HTTP and SSE contract, so Holdfast's page and k6 storm run against it unchanged. Use they/them for Dan.
 
 ## Status
-Planning: `docs/spec.md`, ADRs 0001–0012, `docs/plan.md` and `docs/decisions-log.md` are proposed in PR #1. The ADRs say `Accepted`, and merging accepts them. Next is slice 1 (foundation and the pure core). Open questions are in the decisions log, each with who answers it and by which slice. The judgment behind the project is in `docs/artifact-spec.md`.
+Planning: `docs/spec.md`, ADRs 0001–0014, `docs/plan.md` and `docs/decisions-log.md`. No code yet. Next is slice 1 (foundation and the pure core). Open questions are in the decisions log, each with who answers it and by which slice. The judgment behind the project is in `docs/artifact-spec.md`.
 
 ## How we work
 - Pull requests only. Never push to `main`. Merged PRs are the project's record.
@@ -18,7 +18,7 @@ Planning: `docs/spec.md`, ADRs 0001–0012, `docs/plan.md` and `docs/decisions-l
 ## Constraints
 - **Elixir/OTP is the point.** The service is Elixir. Check current Elixir, OTP and library versions and APIs against their docs before pinning or using anything. Never trust the handoff or this repo's docs for versions.
 - **Independent of Holdfast.** No design choice here may be justified by how Holdfast does it. `~/projects/holdfast` is read-only from here. Never edit it. Its contract, shared Stripe fake and k6 storm are used as black boxes from a pinned commit.
-- **No comparison.** No benchmark against Holdfast and no tuning meant to win one. That's `holdfast-bench`, a later project. Keep spec §6 stable.
+- **No comparison.** No benchmark against Holdfast and no tuning meant to win one. That's the last stage of `bid-storm`, a separate project (`~/projects/bid-storm`, read-only from here). Keep spec §6 stable.
 - Stripe **test mode** only (`sk_test_` keys). Synthetic data only. Never employer code, data or names.
 - Budget under about $10 a month. A hard limit and an alert exist before anything is deployed. Nothing paid without Dan's go-ahead.
 - Secrets never in the repo, logs or PR text.
