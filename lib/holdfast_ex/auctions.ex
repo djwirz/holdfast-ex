@@ -8,6 +8,8 @@ defmodule HoldfastEx.Auctions do
   alias HoldfastEx.AuctionSupervisor
   alias HoldfastEx.Event
   alias HoldfastEx.EventStore
+  alias HoldfastEx.PublicView
+  alias HoldfastEx.Snapshots
 
   @call_margin_ms 1_000
   @attempts 3
@@ -47,14 +49,42 @@ defmodule HoldfastEx.Auctions do
   @doc "Records a new auction and starts its server. `opts` are the server's."
   @spec create(map(), keyword()) :: {:ok, Ecto.UUID.t()} | {:error, :invalid_auction}
   def create(params, opts \\ []) do
-    id = Ecto.UUID.generate()
     now = Keyword.get(opts, :now, &DateTime.utc_now/0)
 
-    with {:ok, events} <- Auction.decide(Auction.new(), {:create, params}, now.()),
-         {:ok, _} <- EventStore.append(id, 1, events),
+    with {:ok, id} <- record(params, now.()),
          :ok <- ensure_started(id, opts) do
       {:ok, id}
     end
+  end
+
+  @doc "Writes a new auction to the log, starting nothing."
+  @spec record(map(), DateTime.t()) :: {:ok, Ecto.UUID.t()} | {:error, :invalid_auction}
+  def record(params, now \\ DateTime.utc_now()) do
+    id = Ecto.UUID.generate()
+
+    with {:ok, events} <- Auction.decide(Auction.new(), {:create, params}, now),
+         {:ok, _} <- EventStore.append(id, 1, events) do
+      {:ok, id}
+    end
+  end
+
+  @doc """
+  An auction's public view: this node's copy, or, with none, its server's, which
+  is started if need be (ADR 0014).
+  """
+  @spec view(String.t()) :: {:ok, PublicView.t()} | {:error, :not_found | :unavailable}
+  def view(auction_id) do
+    with nil <- Snapshots.get(auction_id),
+         :ok <- ensure_started(auction_id) do
+      {:ok, GenServer.call(server_name(auction_id), :view)}
+    else
+      %PublicView{} = view -> {:ok, view}
+      error -> error
+    end
+  rescue
+    _ in [DBConnection.ConnectionError, Postgrex.Error] -> {:error, :unavailable}
+  catch
+    :exit, _reason -> {:error, :unavailable}
   end
 
   @doc """

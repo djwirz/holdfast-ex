@@ -12,6 +12,7 @@ defmodule HoldfastEx.EventStore do
 
   alias HoldfastEx.Event
   alias HoldfastEx.EventStore.Codec
+  alias HoldfastEx.PublicView
   alias HoldfastEx.Repo
 
   @type key_row :: %{bid_id: String.t(), auction_id: Ecto.UUID.t(), amount: pos_integer()}
@@ -117,16 +118,84 @@ defmodule HoldfastEx.EventStore do
 
   @doc "An auction's whole log, in seq order."
   @spec load(Ecto.UUID.t()) :: [Event.t()]
-  def load(auction_id) do
+  def load(auction_id), do: select("WHERE auction_id = $1", [Ecto.UUID.dump!(auction_id)])
+
+  defp select(where, params) do
     %{rows: rows} =
       Repo.query!(
-        "SELECT seq, type, v, data, inserted_at FROM auction_events " <>
-          "WHERE auction_id = $1 ORDER BY seq",
-        [Ecto.UUID.dump!(auction_id)]
+        "SELECT seq, type, v, data, inserted_at FROM auction_events #{where} ORDER BY seq",
+        params
       )
 
     Enum.map(rows, fn [seq, type, v, data, at] ->
       %Event{seq: seq, at: at, v: v, data: Codec.decode(type, v, data)}
+    end)
+  end
+
+  @doc "Only the events that change what the public sees."
+  @spec load_public(Ecto.UUID.t()) :: [Event.t()]
+  def load_public(auction_id) do
+    select(
+      "WHERE auction_id = $1 AND type IN " <>
+        "('auction_created', 'bid_accepted', 'auction_closed', 'capture_succeeded')",
+      [Ecto.UUID.dump!(auction_id)]
+    )
+  end
+
+  @doc "One bid's events, with every accept and close that can change its status."
+  @spec load_bid(Ecto.UUID.t(), String.t()) :: [Event.t()]
+  def load_bid(auction_id, bid_id) do
+    select(
+      "WHERE auction_id = $1 AND (data ->> 'bid_id' = $2 " <>
+        "OR type IN ('bid_accepted', 'auction_closed'))",
+      [Ecto.UUID.dump!(auction_id), bid_id]
+    )
+  end
+
+  @doc "Whose bid it is and in which auction, or nil."
+  @spec bid_owner(String.t()) :: %{user_id: String.t(), auction_id: Ecto.UUID.t()} | nil
+  def bid_owner(bid_id) do
+    case Repo.query!("SELECT user_id, auction_id FROM bid_keys WHERE bid_id = $1", [bid_id]) do
+      %{rows: [[user_id, auction_id]]} ->
+        %{user_id: user_id, auction_id: Ecto.UUID.load!(auction_id)}
+
+      %{rows: []} ->
+        nil
+    end
+  end
+
+  # Live, upcoming, and ended within the last day (spec §6). Read from the log:
+  # there are no projections (ADR 0003).
+  @auctions """
+  SELECT c.auction_id, c.data ->> 'title', (c.data ->> 'starts_at')::timestamptz,
+         (c.data ->> 'ends_at')::timestamptz,
+         EXISTS (SELECT 1 FROM auction_events e
+                 WHERE e.auction_id = c.auction_id AND e.type = 'auction_closed'),
+         EXISTS (SELECT 1 FROM auction_events e
+                 WHERE e.auction_id = c.auction_id AND e.type = 'capture_succeeded'),
+         (SELECT (e.data ->> 'amount')::bigint FROM auction_events e
+          WHERE e.auction_id = c.auction_id AND e.type = 'bid_accepted'
+          ORDER BY e.seq DESC LIMIT 1),
+         now()
+  FROM auction_events c
+  WHERE c.type = 'auction_created'
+    AND (c.data ->> 'ends_at')::timestamptz > now() - interval '1 day'
+  ORDER BY 4 DESC
+  LIMIT 50
+  """
+
+  @spec list_auctions() :: [map()]
+  def list_auctions do
+    %{rows: rows} = Repo.query!(@auctions)
+
+    Enum.map(rows, fn [id, title, starts_at, ends_at, closed?, captured?, high, now] ->
+      %{
+        id: Ecto.UUID.load!(id),
+        title: title,
+        status: PublicView.status(closed?, captured?, starts_at, now),
+        endsAt: PublicView.time(ends_at),
+        currentHigh: high
+      }
     end)
   end
 

@@ -37,6 +37,14 @@ Questions from the planning handoff (2026-11-23) and from writing the spec. A de
 | Q25 | When the caller gets `pending` | The server replies at the deadline (2 seconds by default, configurable) from memory. The call's own timeout is a second later, for a server that can't answer | A slow card costs no database read | planner | |
 | Q26 | Restart limits | Per auction: ten in five seconds | A burst on one auction must not reach the others | planner | 0016 |
 | Q27 | Which auctions the sweep covers when a bid is in flight at a close with no winner | Those too | Otherwise that bid is never resolved after a node dies | Dan | 0015 |
+| Q-V1 (slice 3) | Versions first used in slice 3 | Plug 1.20.4, Bandit 1.15.0, phoenix_pubsub 2.4.1 (standalone, as ADR 0009 asked), k6 2.4.0 by digest, checked 2026-11-27. The rest of Q-V1 stays open | Current releases | planner | |
+| Q-A2 | How `GET /api/bids/:id` and `GET /api/auctions` read, with no projections, on any node and after close | The bid: `bid_keys`, indexed by bid id, names its auction and owner, then a query for that bid's events and every accept and close. The list: one query over the log. Revisit if measured as slow | Works on any node and after the server has stopped | planner | 0003 |
+| Q28 | One read model or two: live events and reads from the log | One pure fold (`PublicView`) beside the core, used to publish, to write the snapshot and to read | §6 wants an event to be the same either way | planner | 0009 |
+| Q29 | Alias format | `Bidder ` and six hex digits of an HMAC-SHA256 of auction and user | Stable per auction, nothing stored, and four digits would collide too easily for `you` | planner | |
+| Q30 | Input limits | Amount 1 to 99,999,999 cents, key 1 to 100 characters of UTF-8 without NUL, login as §6, body 1,000 bytes with `amount` alone | The top amount is Stripe's PaymentIntent maximum (eight digits). Postgres text can't hold NUL | planner | |
+| Q31 | Rate limits | A fixed window per node in ETS: 10 bids per 10 seconds per user, 20 sign-ins a minute per address, by configuration. A refused or invalid request counts | A courtesy, not a guard on correctness, so no library and nothing shared | planner | |
+| Q32 | Do `Secure` cookies work over local HTTP | Yes in the built-in browser (Chrome 156), checked 2026-11-27: signed in on `http://localhost:3000` and stayed signed in. MDN says Safari does not, and it wasn't tried. So the cookie is always `Secure`, and local use needs a Chromium or Firefox browser (Firefox untried) | Spec §9 unchanged | planner, verified | |
+| Q33 | Building Holdfast's page | `scripts/fetch-page.sh` clones the pinned commit into `vendor/`, and installs with `--ignore-scripts`. pnpm installs the workspace root's tools too, and one runs a binary download | Only the page is needed, and none of it needs install scripts | planner | 0011 |
 
 ## Still open
 | # | Question | Leaning | Who answers | By |
@@ -46,6 +54,5 @@ Questions from the planning handoff (2026-11-23) and from writing the spec. A de
 | Q-D3 | Hosting and its budget limit, with current prices | Railway Hobby with a hard usage limit, the starting candidate | planner, then Dan | slice 6 (ADR) |
 | Q-R1 | Stretch order: soft close, LiveView page, two-node deploy | Soft close first (smallest), then LiveView | Dan | after slice 7 |
 | Q-V1 | Current Elixir, OTP, Bandit, Plug, Ecto, Postgrex, `phoenix_pubsub`, StreamData, Req, OpenTelemetry and libcluster versions and APIs | Check at the slice that first uses each one. Never from the handoff or this repo's docs | planner | each slice |
-| Q-A2 | How `GET /api/bids/:id` and `GET /api/auctions` read, with no projections, on any node and after close | Fold from the log, indexed by bid id; revisit if measured as slow | planner | slice 3 |
 | Q-B1 | When the comparison method is written, and how its rate-limited condition works | In bid-storm, before slice 5 gives this system any load results | Dan | slice 5 |
 | Q-T1 | Accepts are guarded by database time, the close is not. A node with a fast clock refuses late bids early and can close an auction early. No invariant breaks, but a bidder in the last seconds loses out | Guard the close the same way (refused while the database's time is before `ends_at`), in a new ADR | Dan | slice 5 |

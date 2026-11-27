@@ -28,7 +28,8 @@ defmodule HoldfastEx.Test.DBCase do
 
   setup tags do
     stop_auctions()
-    Repo.query!("TRUNCATE auction_events, bid_keys")
+    Repo.query!("TRUNCATE auction_events, bid_keys, users, sessions")
+    HoldfastEx.RateLimit.reset()
     Memory.reset()
     # Callbacks run last-first: stop the servers, then check what they left.
     if Map.get(tags, :check_logs, true), do: on_exit(&check_every_log/0)
