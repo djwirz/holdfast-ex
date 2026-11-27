@@ -1,6 +1,6 @@
 # holdfast-ex: spec
 
-Status: Draft for PR #1 · Date: 2026-11-23 · Owner: Dan
+Status: Accepted in PR #1, revised 2026-11-27 · Date: 2026-11-23 · Owner: Dan
 
 ## 1. Problem
 
@@ -34,7 +34,7 @@ It shows Elixir and OTP used for what they're for: processes as the unit of cons
 
 ## 2. Non-goals (v1)
 
-- **Comparison.** No benchmark against Holdfast, and no tuning meant to win one. That's `holdfast-bench`, a separate, later project (§12).
+- **Comparison.** No benchmark against Holdfast, and no tuning meant to win one. That's the last stage of [bid-storm](https://github.com/djwirz/bid-storm), a separate project (§12).
 - **Changes to Holdfast.** Its repo is read-only from here.
 - **Real money.** Stripe test mode only, with no live-mode code path.
 - **Proxy bidding, seller payouts, 3-D Secure challenges at bid time, multi-currency.**
@@ -84,25 +84,27 @@ It shows Elixir and OTP used for what they're for: processes as the unit of cons
 ```
 
 ### Components
-- **AuctionServer** (ADR 0002). A GenServer per open auction, started on demand under a DynamicSupervisor and registered cluster-wide (ADR 0012). On start it replays its events to rebuild state and schedules its close (ADR 0007). A bid arrives as a call. The server:
+- **AuctionServer** (ADR 0002). A GenServer per auction, started on demand (also for a closed auction that receives a bid) under a DynamicSupervisor and registered cluster-wide (ADR 0012). On start it replays its events to rebuild state and schedules its close (ADR 0007). A bid arrives as a call. The server:
   1. runs the pre-check in memory;
   2. appends `bid_placed`;
   3. starts a supervised Task for the authorization through the gate.
 
-  It never blocks on Stripe. The Task's result comes back as a message, and the server decides it in memory against the current state, then appends the outcome. Commit order is the order in which authorizations return to the mailbox. The HTTP caller waits up to a short deadline; if the bid hasn't resolved, the caller gets `202 pending`, and the work carries on. The server replies to waiting callers with `GenServer.reply` when their bid resolves.
+  A bid the pre-check refuses is still a bid. The server appends `bid_placed` and `bid_rejected` together, with the rule as the reason (`below_minimum`, `ended`, `not_open`) and the `bid_keys` row, and calls nobody. The caller gets `201` with the rejected bid, can poll it, and a retry of the key gets it back. Only requests the contract answers with an error (`400`, `401`, `403`, `404`, `422`, `429`) record nothing.
+
+  It never blocks on Stripe. The Task's result comes back as a message, and the server decides it in memory against the current state, then appends the outcome. Commit order is the order in which authorizations return to the mailbox. The HTTP caller waits up to a short deadline; if the bid hasn't resolved, the caller gets `202 pending`, and the work carries on. The server replies to waiting callers with `GenServer.reply` when their bid resolves. The HTTP layer generates the bid id before the call, and a call that times out or finds its server gone never becomes a `500` (decisions log, Q-A1).
 - **Core** (ADR 0004). Pure functions: `decide(state, command, now) :: {:ok, [event]} | {:error, reason}` and `apply(state, event) :: state`. They hold every rule. The invariants are functions over an event list. The server is a thin shell that feeds commands in and appends what comes out.
-- **Event store** (ADRs 0003, 0005). `append(auction_id, expected_seq, events)` inserts rows with consecutive sequence numbers under `PRIMARY KEY (auction_id, seq)`, in one transaction. A conflict means another writer got there first: the server crashes and its supervisor restarts it from the log.
+- **Event store** (ADRs 0003, 0005). `append(auction_id, expected_seq, events)` inserts rows with consecutive sequence numbers under `PRIMARY KEY (auction_id, seq)`, in one transaction. A conflict on that key means another writer got there first: the server crashes and its supervisor restarts it from the log. A conflict on `bid_keys` in the same transaction is different: the key is already used, so the caller gets the original bid or a `422`, and the server carries on.
 - **Log first.** The in-memory state changes only after the append commits. A reply, publish or ETS write never runs ahead of the log.
-- **StripeGate** (ADR 0008). A process per node holding a token bucket and an in-flight cap, sized to that node's share of the account limit. Requests are queued by class (authorize, cancel, capture), and part of the budget is kept for cancels and captures. A bid that waits too long for a token gets an honest `202` from the HTTP layer. Pre-checks reject doomed bids before they spend a call.
+- **StripeGate** (ADR 0008). A process per node holding a token bucket and an in-flight cap, sized to that node's share of the account limit. Both are configuration: the default stays under the sandbox limit, and a run against a fake records what it used. Requests are queued by class (authorize, cancel, capture), and part of the budget is kept for cancels and captures. A bid that waits too long for a token gets an honest `202` from the HTTP layer. Pre-checks reject doomed bids before they spend a call.
 - **HoldKeeper** (ADR 0006). The holds that should be live follow from the state: the current high's on an open auction, the winner's until capture, and those of pending bids. Every other authorized, uncanceled hold must be canceled. HoldKeeper computes that difference at startup, on events and on an interval, and sends the cancels through the gate. It also captures winners after close. Stripe's idempotent cancels make repeating it safe.
 - **Payments behaviour.** One interface with three adapters:
   - `Stripe`: our own thin client over Req (ADR 0010).
-  - `HttpFake`: speaks Holdfast's shared fake's own small protocol (`POST /authorize`, `/cancel`, `/capture`, `GET /audit`), which is not Stripe's API.
+  - `HttpFake`: speaks Holdfast's shared fake's own small protocol (`POST /authorize`, `/cancel`, `/capture`, `GET /intents/:id`, `/audit`), which is not Stripe's API. `FAKE_PAYMENTS_URL` says where it is.
   - `Memory`: in-process, for unit and property tests.
 
   Each adapter maps its answers to one error taxonomy: declined, needs authentication, transient (retry the same key), key in flight (`409`), replayed `500` (look up the hold by metadata), and a bug (raise).
 - **Reads** (ADR 0009). The AuctionServer writes its public snapshot (auction, current high, recent bids, `version`, `minimumNextBid`) to an ETS table on every change. Snapshot GETs read ETS and never touch the server. On other nodes a snapshot comes over PubSub into that node's ETS. A node that has missed it reads it from the owner once.
-- **Live updates** (ADR 0009). The server publishes each public event on `Phoenix.PubSub` (`auction:<id>`). Each node's SSE connections receive it. On connect, or on `Last-Event-ID`, the connection reads public events after that id from `auction_events`, then follows PubSub, deduplicating by id.
+- **Live updates** (ADRs 0009, 0013). The server publishes each public event on `Phoenix.PubSub` (`auction:<id>`), with the previous public event's seq. Each node's SSE connections receive it. A new connection subscribes, sends a `snapshot` event, reads any public events after the snapshot's version from `auction_events`, then follows PubSub, deduplicating by id. A resume with `Last-Event-ID` sends no snapshot and starts from that id. A previous public seq beyond what the connection has means a message was missed, and it reads the log.
 - **Webhook.** Verifies Stripe's signature on the raw body, records the event id for dedupe, and nudges HoldKeeper and the auction. It speeds things up, and is never the only source of truth.
 
 ### Data model (PostgreSQL)
@@ -122,9 +124,9 @@ Money is integer cents. An auction's version is the `seq` of its latest event.
 | `auction_created` | title, starts_at, ends_at, starting_price, min_increment | no (it's in the snapshot) |
 | `bid_placed` | bid_id, user_id, amount, idempotency_key | no |
 | `hold_authorized` | bid_id, payment_intent_id, amount_capturable | no |
-| `bid_rejected` | bid_id, reason (a rule, a decline code, `authentication_required`, `processing_error`) | no |
+| `bid_rejected` | bid_id, reason (a rule from the pre-check, a decline code, `authentication_required`, `processing_error`) | no |
 | `bid_accepted` | bid_id, amount, alias, previous_high_bid_id | yes, `bid.accepted` |
-| `bid_lost` | bid_id, reason `lost_race` | no |
+| `bid_lost` | bid_id, reason: why it no longer qualified (`below_minimum`, `ended`, `not_open`, `not_covered`) | no |
 | `hold_released` | payment_intent_id | no |
 | `auction_closed` | winner_bid_id or none | yes, `auction.closed` |
 | `capture_succeeded` / `capture_failed` | payment_intent_id, reason | no |
@@ -141,24 +143,51 @@ Transient Stripe outcomes are not events: a bid with `bid_placed` and no outcome
 
 ## 6. Interfaces: the contract
 
-The HTTP and SSE contract is Holdfast's (Holdfast spec §6, its `load/storm.ts` and its page), kept stable so Holdfast's page and k6 storm run unchanged and `holdfast-bench` stays possible. Re-read those sources at slice 3 before relying on any detail here.
+The HTTP and SSE contract is Holdfast's, kept stable so Holdfast's page and k6 storm run unchanged and a comparison stays possible. Its sources are Holdfast's spec §6, its `load/storm.ts` and its page, read at the pinned commit (decisions log, Q-R2). Where the spec there says less than the page and the storm need, this section records what those two clients need. Re-read them at slice 3 before relying on any detail here.
 
-- `POST /api/auth/dev` `{ login }` → sets the `holdfast_session` cookie (only with dev sign-in enabled). `POST /api/auth/logout`.
-- `GET /api/me`, `GET /api/config`, `GET /api/auctions`.
-- `GET /api/auctions/:id` → snapshot with `version` and `minimumNextBid`, and your alias when signed in.
-- `POST /api/auctions/:id/bids` `{ amount }` with an `Idempotency-Key` header:
-  - `201 { bid }` resolved (`accepted`, `lost_race` or `rejected` with a reason);
-  - `202 { bid }` still `pending`;
-  - `400` bad body or missing key; `401` signed out; `403` wrong origin; `404` unknown auction;
-  - `422` key reused with a different auction or amount; `429` rate limited.
+**Routes**
 
-  Errors are `{ error, message }`.
-- `GET /api/bids/:id` → the bid, for its own bidder only.
-- `GET /api/auctions/:id/events` → SSE: `bid.accepted`, `auction.closed` (`auction.extended` if built). Each event's id is the auction version. Resume uses `Last-Event-ID`.
-- `POST /api/stripe/webhook`.
-- **Public identity:** per-auction aliases (an HMAC of user and auction), never user ids.
+| Route | Answers |
+|---|---|
+| `POST /api/auth/dev` `{ login }` (only with dev sign-in enabled) | `204` and the `holdfast_session` cookie; `400` unless `login` is 1 to 39 of `A-Z a-z 0-9 -` |
+| `POST /api/auth/logout` | `204` |
+| `GET /api/config` | `{ githubSignIn, devSignIn, cardRequired, stripePublishableKey }` |
+| `GET /api/me` | `{ user: { login }, hasCard, cardRequired }`, or `401` signed out |
+| `POST /api/me/card/setup`, `POST /api/me/card` `{ setupIntentId }` (real Stripe only) | `{ clientSecret }`, then `{ hasCard: true }` or `422` |
+| `GET /api/auctions` | `{ auctions: [{ id, title, status, endsAt, currentHigh }] }`: live, upcoming, and ended within the last day; `currentHigh` is an amount or null |
+| `GET /api/auctions/:id` | the snapshot, or `404` |
+| `POST /api/auctions/:id/bids` `{ amount }` with `Idempotency-Key` | see below |
+| `GET /api/bids/:id` | `{ bid }` for its own bidder; `401` signed out; `404` for anyone else |
+| `GET /api/auctions/:id/events` | SSE, or `404` |
+| `POST /api/stripe/webhook` | signature verified |
 
-**What's load-bearing for `holdfast-bench`:**
+**Placing a bid**
+- `201 { bid }` resolved (`accepted`, `lost_race` or `rejected` with a reason);
+- `202 { bid }` still `pending`;
+- `400` bad body or a missing key (1 to 100 characters); `401` signed out; `403` wrong origin; `404` unknown auction;
+- `422` key reused with a different auction or amount, even if the first bid was rejected; `429` rate limited.
+
+A retry with the same key and amount returns the same bid as it stands now. A bid after the close is `201`, `rejected`, `ended`. Errors are `{ error, message }`.
+
+**Shapes**
+- **Ids:** auction ids are UUIDs. The page routes on them.
+- **Bid:** `{ id, auctionId, amount, status, reason, createdAt, resolvedAt }`. `status` is `pending`, `accepted`, `outbid`, `lost_race`, `rejected` or `won`. `outbid` and `won` are derived from later events: a bid once accepted is only ever `accepted`, `outbid` or `won`.
+- **Snapshot:** `{ auction: { id, title, status, startsAt, endsAt, startingPrice, minIncrement, version, minimumNextBid }, currentHigh, recentBids, you }`. The auction `status` is `scheduled`, `open`, `closed` or `settled`. `minimumNextBid` is null once closed. `currentHigh` is a public bid or null, `recentBids` the latest twenty accepted, newest first, and `you` the caller's alias or null.
+- **Public bid:** `{ version, amount, bidder, at }`.
+- Money is integer cents, and times are ISO 8601.
+
+**SSE**
+- A new connection gets `retry`, then `event: snapshot` with the snapshot, its id the auction version. The page shows nothing until it arrives.
+- `bid.accepted`: `{ type, version, amount, bidder, at }`.
+- `auction.closed`: `{ type, version, status, winner, amount }`, with nulls when there were no bids.
+- `auction.extended`, if soft close is built.
+- Each event's id is its auction version. With `Last-Event-ID`, the stream sends the public events after it and no snapshot. Comment lines keep an idle stream open.
+
+**Pages:** the node serves the built page, and a `GET` for a page route such as `/auctions/:id` gets `index.html`. Unknown paths under `/api/` stay JSON `404`s.
+
+**Public identity:** per-auction aliases (an HMAC of user and auction), never user ids or logins.
+
+**What's load-bearing for a comparison:**
 - the routes and status codes above;
 - the session cookie;
 - `minimumNextBid`;
@@ -167,7 +196,7 @@ The HTTP and SSE contract is Holdfast's (Holdfast spec §6, its `load/storm.ts` 
 - versions that increase;
 - `Last-Event-ID` resume.
 
-Holdfast's versions go up by exactly one, while ours are event sequence numbers with gaps. Holdfast's page only needs them to increase: it ignores anything at or below the version it has (`web/src/live.ts`). So gaps are part of this contract, and the comparison must not assume contiguous versions.
+Holdfast's versions go up by exactly one, while ours are event sequence numbers with gaps. Holdfast's page only needs them to increase: it ignores anything at or below the version it has (`web/src/live.ts`). So gaps are part of this contract, and a comparison must not assume contiguous versions.
 
 ## 7. Invariants and failure modes
 
@@ -193,7 +222,7 @@ And the design rule they rest on, tested directly:
 | Two bids race at the same amount | The first authorization back to the mailbox wins. The other is `bid_lost`, and its hold is canceled. |
 | Close timer fires while authorizations are in flight | `auction_closed` is appended. Later results decide as `bid_lost` (reason `ended`), and their holds are canceled. |
 | Capture fails at close | `capture_failed` is recorded and retried with backoff. An alert fires after repeated failures, and the runbook covers it. |
-| PubSub message lost | The SSE connection sees a version gap on its next event, or the slow poll catches it, and reads the gap from the log. |
+| PubSub message lost | The next event's previous public seq is beyond what the SSE connection has (ADR 0013), or the slow poll catches it, and the connection reads the log. |
 
 **Ordering note:** commit order, not click order, decides ties. A bidder who clicked first can lose to one whose authorization came back faster. One honest line in the UI and the case study says so.
 
@@ -228,8 +257,8 @@ And the design rule they rest on, tested directly:
 ## 9. Security
 - Secrets (Stripe keys, webhook secret, session secret, alias key) live in the host's secret store, never in the repo, logs or PR text.
 - At startup, production refuses: non-`sk_test_` keys, a non-`https` app origin, and dev sign-in unless deployed access says otherwise (decisions log, Q-D1).
-- Sessions: `HttpOnly`, `Secure`, `SameSite=Lax` cookies with 32 random bytes; only their SHA-256 is stored. Origin check on state-changing requests.
-- Request bodies are validated, and amounts are integers in a sane range. Bids are rate-limited per user, sign-in per IP.
+- Sessions: `HttpOnly`, `Secure`, `SameSite=Lax` cookies with 32 random bytes; only their SHA-256 is stored. Origin check on state-changing requests, against the configured app origin and not the request's `Host`.
+- Request bodies are validated, and amounts are integers in a sane range. Bids are rate-limited per user, sign-in per IP. Both limits are configuration: a load run signs every bidder in from one address, so it raises them and records the values.
 - Webhook signatures are verified on the raw body.
 - gitleaks in CI; `.env.example` holds placeholders only.
 
@@ -245,9 +274,11 @@ And the design rule they rest on, tested directly:
   - The AuctionServer killed at every step of a bid, then restarted.
   - The close timer with in-flight authorizations.
   - HoldKeeper against the in-memory fake with failing cancels.
+  - The two unique conflicts told apart: a used key against a second writer.
 - **Contract:** HTTP and SSE against §6, including `Last-Event-ID` resume and the status codes.
-- **Payments:** the Stripe adapter against Holdfast's shared HTTP fake for failure injection (`409`, replayed `500`, latency, declines, failing cancels), and an opt-in real test-mode suite, run by hand before payment-touching merges and never in CI.
-- **Load:** Holdfast's `load/storm.ts` (k6 in Docker) against two clustered local nodes and the shared fake, then our checker. Our checker reads the event log and the fake's `GET /audit` and applies the invariant functions. It fails on any violation, any give-up, or a run where nothing was accepted. CI runs a short storm, and bigger runs are by hand.
+- **Payments:** the `HttpFake` adapter against Holdfast's shared fake for failure injection it can do over HTTP: latency, declines, failing cancels, and `503` for a lost response or a key still in flight. The fake never sends a `409`, and it recovers its simulated `500` itself, so the Stripe adapter's handling of `409` and replayed `500` is tested against stubbed Stripe responses. Plus an opt-in real test-mode suite, run by hand before payment-touching merges and never in CI.
+- **Load:** Holdfast's `load/storm.ts` (k6 in Docker) from the pinned commit, then our checker. The storm first runs at slice 3 against one node and the in-memory adapter, adds the shared fake and the checker at slice 4, and moves to two clustered nodes behind a round-robin proxy at slice 5. Our checker reads the event log and the fake's `GET /audit` and applies the invariant functions. It fails on any violation, any give-up, or a run where nothing was accepted. CI runs a short storm from slice 4, and bigger runs are by hand. The fake's latency and fault settings are written down with each run.
+- **Seeding:** there's no endpoint for creating auctions. A command opens one that ends after a given number of seconds and prints its id, for the storm, local runs and the demo. Holdfast's `load/run.sh` calls Holdfast's own seed and checker, so we write our own runner around the same `storm.ts`.
 - **CI on every PR:** `mix format --check-formatted`, compile with warnings as errors, Credo, Dialyzer, unit, property, integration and contract tests, the short storm with the checker, gitleaks.
 
 ### Local development
@@ -267,4 +298,4 @@ Stretch: soft close, a LiveView page (needs Phoenix; supersedes part of ADR 0010
 ## 12. Slices, decisions and the comparison boundary
 - The slice plan, with what each slice proves, its inputs and its done criteria, is in [plan.md](plan.md).
 - Questions settled and still open, with who answers each, are in [decisions-log.md](decisions-log.md).
-- `holdfast-bench` is a separate, later project. It uses only black-box things: the §6 contract, Holdfast's shared Stripe fake, and a correctness checker. Neither side is tuned mid-comparison. Nothing here is designed or tuned for it beyond keeping §6 stable.
+- The comparison is the last stage of [bid-storm](https://github.com/djwirz/bid-storm), a separate project. Where merged ADRs and older log entries say `holdfast-bench`, they mean that stage. It uses only black-box things: the §6 contract, Holdfast's shared Stripe fake, and correctness checks. Neither side is tuned mid-comparison. Nothing here is designed or tuned for it beyond keeping §6 stable: no adapter for it, no output shaped for it, and no runs of it in these slices.

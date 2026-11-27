@@ -1,7 +1,7 @@
 # 9. Reads never touch the process; fan-out over PubSub, no Redis
 
 Date: 2026-11-23
-Status: Accepted
+Status: Accepted. Gap detection superseded by 13
 
 ## Context
 Page loads and snapshot polls far outnumber bids. If every read called the AuctionServer, reads would queue behind decisions in its mailbox. Live updates must reach SSE connections on every node, in order, resumable by `Last-Event-ID`, without inventing or dropping an event.

@@ -37,7 +37,7 @@ This list comes out of the design. It isn't a target the design was built to hit
   - A LiveView page. It would need Phoenix, and a superseding ADR (ADR 0010).
   - A two-node deploy, if Railway's private network supports clustering (decisions log).
 - **Non-goals (on purpose):**
-  - Any benchmark against Holdfast, or tuning meant to win one. That's `holdfast-bench`, a later project.
+  - Any benchmark against Holdfast, or tuning meant to win one. That's the last stage of `bid-storm`, a separate project.
   - Changes to the Holdfast repo. It's read-only from here.
   - Real money. Stripe test mode only.
   - Sharding, multi-region, proxy bidding, seller payouts.
